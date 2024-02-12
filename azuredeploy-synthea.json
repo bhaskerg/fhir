@@ -1,0 +1,146 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "storageAccountType": {
+            "type": "string",
+            "defaultValue": "Standard_LRS",
+            "allowedValues": [
+                "Standard_LRS",
+                "Standard_GRS",
+                "Standard_ZRS"
+            ],
+            "metadata": {
+                "description": "Storage Account type"
+            }
+        },
+        "storageAccountName": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "Storage Account Name"
+            }
+        },
+        "containerGroupPrefix": {
+            "type": "string",
+            "defaultValue": "syntheagenerator"
+        },
+        "syntheaArgs": {
+            "type": "string",
+            "defaultValue": "-p 100"
+        }
+    },
+    "variables": {
+        "azureCliImage": "mcr.microsoft.com/azure-cli",
+        "storageAccountName": "[if(empty(parameters('storageAccountName')),concat('syntheapoolsa', uniqueString(resourceGroup().id)),parameters('storageAccountName'))]",
+        "containerGroupName": "[concat(parameters('containerGroupPrefix'), uniqueString(resourceGroup().id, deployment().name))]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Storage/storageAccounts",
+            "name": "[variables('storageAccountName')]",
+            "apiVersion": "2017-10-01",
+            "location": "[resourceGroup().location]",
+            "sku": {
+                "name": "[parameters('storageAccountType')]"
+            },
+            "kind": "Storage",
+            "properties": {}
+        },
+        {
+            "name": "SyntheaShare",
+            "type": "Microsoft.ContainerInstance/containerGroups",
+            "apiVersion": "2018-02-01-preview",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[concat('Microsoft.Storage/storageAccounts/', variables('storageAccountName'))]"
+            ],
+            "properties": {
+                "containers": [
+                    {
+                        "name": "etcshare",
+                        "properties": {
+                            "image": "[variables('azureCliImage')]",
+                            "command": [
+                                "az",
+                                "storage",
+                                "share",
+                                "create",
+                                "--name",
+                                "synthea"
+                            ],
+                            "environmentVariables": [
+                                {
+                                    "name": "AZURE_STORAGE_KEY",
+                                    "value": "[listKeys(variables('storageAccountName'),'2017-10-01').keys[0].value]"
+                                },
+                                {
+                                    "name": "AZURE_STORAGE_ACCOUNT",
+                                    "value": "[variables('storageAccountName')]"
+                                }
+                            ],
+                            "resources": {
+                                "requests": {
+                                    "cpu": "1",
+                                    "memoryInGb": "2"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "restartPolicy": "OnFailure",
+                "osType": "Linux"
+            }
+        },
+        {
+            "name": "[variables('containerGroupName')]",
+            "type": "Microsoft.ContainerInstance/containerGroups",
+            "dependsOn": [
+                "[concat('Microsoft.ContainerInstance/containerGroups/', 'SyntheaShare')]"
+            ],
+            "apiVersion": "2018-04-01",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "containers": [
+                    {
+                        "name": "synthea",
+                        "properties": {
+                            "image": "hansenms/syntheagen",
+                            "command": ["bash", "-c", "/app/generate_patients.sh"],
+                            "environmentVariables":[
+                                {
+                                    "name": "SYNTHEA_ARGS",
+                                    "value": "[parameters('syntheaArgs')]"
+                                }
+                            ],
+                            "volumeMounts": [
+                                {
+                                    "mountPath": "/app/synthea/output",
+                                    "name": "synthea"
+                                }
+                            ],
+                            "resources": {
+                                "requests": {
+                                    "memoryInGB": "4",
+                                    "cpu": "1"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "restartPolicy": "OnFailure",
+                "volumes": [
+                    {
+                        "azureFile": {
+                            "shareName": "synthea",
+                            "storageAccountKey": "[listKeys(variables('storageAccountName'),'2017-10-01').keys[0].value]",
+                            "storageAccountName": "[variables('storageAccountName')]"
+                        },
+                        "name": "synthea"
+                    }
+                ],
+                "osType": "linux"
+            }
+        }
+    ]
+}
